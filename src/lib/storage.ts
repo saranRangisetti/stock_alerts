@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { kv } from "@vercel/kv";
 
 export interface TrackedProduct {
   id: string;
@@ -28,18 +29,6 @@ export interface EmailSettingsData {
 // ─── Detect environment ──────────────────────────────────────────────
 
 const USE_KV = !!process.env.KV_REST_API_URL;
-
-// ─── Vercel KV helpers ───────────────────────────────────────────────
-
-async function kvGet<T>(key: string): Promise<T | null> {
-  const { kv } = await import("@vercel/kv");
-  return kv.get<T>(key);
-}
-
-async function kvSet(key: string, value: unknown): Promise<void> {
-  const { kv } = await import("@vercel/kv");
-  await kv.set(key, value);
-}
 
 // ─── File system helpers (local dev) ────────────────────────────────
 
@@ -79,7 +68,7 @@ function readSettingsFile(): EmailSettingsData {
 
 export async function getProductsAsync(): Promise<TrackedProduct[]> {
   if (USE_KV) {
-    return (await kvGet<TrackedProduct[]>("products")) || [];
+    return (await kv.get<TrackedProduct[]>("products")) || [];
   }
   return readData().products;
 }
@@ -101,7 +90,7 @@ export async function addProduct(
   products.push(newProduct);
 
   if (USE_KV) {
-    await kvSet("products", products);
+    await kv.set("products", products);
   } else {
     writeData({ products });
   }
@@ -120,7 +109,7 @@ export async function updateProduct(
   products[index] = { ...products[index], ...updates };
 
   if (USE_KV) {
-    await kvSet("products", products);
+    await kv.set("products", products);
   } else {
     writeData({ products });
   }
@@ -134,7 +123,7 @@ export async function removeProduct(id: string): Promise<boolean> {
   if (filtered.length === products.length) return false;
 
   if (USE_KV) {
-    await kvSet("products", filtered);
+    await kv.set("products", filtered);
   } else {
     writeData({ products: filtered });
   }
@@ -148,7 +137,7 @@ export async function clearAlert(id: string): Promise<void> {
   if (product) {
     product.previouslyInStock = product.inStock;
     if (USE_KV) {
-      await kvSet("products", products);
+      await kv.set("products", products);
     } else {
       writeData({ products });
     }
@@ -160,7 +149,7 @@ export async function clearAlert(id: string): Promise<void> {
 export async function getEmailSettings(): Promise<EmailSettingsData> {
   if (USE_KV) {
     return (
-      (await kvGet<EmailSettingsData>("settings")) || {
+      (await kv.get<EmailSettingsData>("settings")) || {
         enabled: false,
         senderEmail: "",
         senderAppPassword: "",
@@ -173,7 +162,7 @@ export async function getEmailSettings(): Promise<EmailSettingsData> {
 
 export async function saveEmailSettings(settings: EmailSettingsData): Promise<void> {
   if (USE_KV) {
-    await kvSet("settings", settings);
+    await kv.set("settings", settings);
   } else {
     ensureDataDir();
     fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2));
@@ -205,10 +194,9 @@ function readCacheFile(): CacheStore {
 
 export async function getCache<T>(key: string): Promise<T | null> {
   if (USE_KV) {
-    const entry = await kvGet<CacheEntry>(`cache:${key}`);
+    const entry = await kv.get<CacheEntry>(`cache:${key}`);
     if (!entry) return null;
     if (Date.now() - entry.timestamp > CACHE_TTL) {
-      const { kv } = await import("@vercel/kv");
       await kv.del(`cache:${key}`);
       return null;
     }
@@ -230,7 +218,7 @@ export async function setCache(key: string, data: unknown): Promise<void> {
   const entry: CacheEntry = { data, timestamp: Date.now() };
 
   if (USE_KV) {
-    await kvSet(`cache:${key}`, entry);
+    await kv.set(`cache:${key}`, entry);
   } else {
     ensureDataDir();
     const cache = readCacheFile();

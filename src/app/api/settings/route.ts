@@ -3,8 +3,7 @@ import { getEmailSettings, saveEmailSettings } from "@/lib/storage";
 import { sendTestEmail } from "@/lib/email";
 
 export async function GET() {
-  const settings = getEmailSettings();
-  // Don't expose the full app password to the frontend
+  const settings = await getEmailSettings();
   return NextResponse.json({
     enabled: settings.enabled,
     senderEmail: settings.senderEmail,
@@ -19,7 +18,6 @@ export async function POST(request: Request) {
     const { senderEmail, senderAppPassword, recipientEmail, enabled, testEmail } = body;
 
     if (testEmail) {
-      // Send a test email with provided settings
       const settings = {
         enabled: true,
         senderEmail: senderEmail || "",
@@ -44,17 +42,15 @@ export async function POST(request: Request) {
       return NextResponse.json({ success: true, message: "Test email sent!" });
     }
 
-    // Save settings
-    const existing = getEmailSettings();
+    const existing = await getEmailSettings();
     const settings = {
       enabled: enabled ?? existing.enabled,
       senderEmail: senderEmail ?? existing.senderEmail,
-      // Only update password if provided (not empty)
       senderAppPassword: senderAppPassword || existing.senderAppPassword,
       recipientEmail: recipientEmail ?? existing.recipientEmail,
     };
 
-    saveEmailSettings(settings);
+    await saveEmailSettings(settings);
     return NextResponse.json({ success: true });
   } catch {
     return NextResponse.json({ error: "Invalid request" }, { status: 400 });

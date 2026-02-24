@@ -7,26 +7,24 @@ export async function GET(request: NextRequest) {
   const categoryId = searchParams.get("category");
   const source = searchParams.get("source") as RetailerSource | null;
 
-  // If category specified, scrape that specific category
   if (categoryId) {
     const cacheKey = `discover:${categoryId}`;
-    const cached = getCache(cacheKey);
+    const cached = await getCache(cacheKey);
     if (cached) {
       return NextResponse.json({ products: cached, fromCache: true });
     }
 
     const products = await discoverProducts(categoryId);
     if (products.length > 0) {
-      setCache(cacheKey, products);
+      await setCache(cacheKey, products);
     }
     return NextResponse.json({ products, fromCache: false });
   }
 
-  // If source specified, scrape all categories for that source
   if (source) {
     const categories = getCategoriesForSource(source);
     const cacheKey = `discover:source:${source}`;
-    const cached = getCache(cacheKey);
+    const cached = await getCache(cacheKey);
     if (cached) {
       return NextResponse.json({ products: cached, fromCache: true });
     }
@@ -39,7 +37,6 @@ export async function GET(request: NextRequest) {
       r.status === "fulfilled" ? r.value : [],
     );
 
-    // Deduplicate by product URL
     const seen = new Set<string>();
     const unique = products.filter((p) => {
       if (seen.has(p.productUrl)) return false;
@@ -48,11 +45,10 @@ export async function GET(request: NextRequest) {
     });
 
     if (unique.length > 0) {
-      setCache(cacheKey, unique);
+      await setCache(cacheKey, unique);
     }
     return NextResponse.json({ products: unique, fromCache: false });
   }
 
-  // Return available categories
   return NextResponse.json({ categories: CATEGORIES });
 }

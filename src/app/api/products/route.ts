@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  getProducts,
+  getProductsAsync,
   addProduct,
   removeProduct,
   clearAlert,
@@ -8,7 +8,7 @@ import {
 import { scrapeProduct, isSupportedUrl } from "@/lib/scraper";
 
 export async function GET() {
-  const products = getProducts();
+  const products = await getProductsAsync();
   return NextResponse.json(products);
 }
 
@@ -29,7 +29,6 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Scrape the product to get initial data
   const scraped = await scrapeProduct(trimmedUrl);
   if (!scraped) {
     return NextResponse.json(
@@ -38,7 +37,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const product = addProduct({
+  const product = await addProduct({
     url: trimmedUrl,
     name: scraped.name,
     price: scraped.price,
@@ -57,7 +56,7 @@ export async function DELETE(request: NextRequest) {
   const action = searchParams.get("action");
 
   if (action === "clear-alert" && id) {
-    clearAlert(id);
+    await clearAlert(id);
     return NextResponse.json({ success: true });
   }
 
@@ -68,7 +67,7 @@ export async function DELETE(request: NextRequest) {
     );
   }
 
-  const removed = removeProduct(id);
+  const removed = await removeProduct(id);
   if (!removed) {
     return NextResponse.json({ error: "Product not found" }, { status: 404 });
   }

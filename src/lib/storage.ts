@@ -18,22 +18,45 @@ interface StorageData {
   products: TrackedProduct[];
 }
 
+export interface EmailSettingsData {
+  enabled: boolean;
+  senderEmail: string;
+  senderAppPassword: string;
+  recipientEmail: string;
+}
+
+// ─── Detect environment ──────────────────────────────────────────────
+
+const USE_KV = !!process.env.KV_REST_API_URL;
+
+// ─── Vercel KV helpers ───────────────────────────────────────────────
+
+async function kvGet<T>(key: string): Promise<T | null> {
+  const { kv } = await import("@vercel/kv");
+  return kv.get<T>(key);
+}
+
+async function kvSet(key: string, value: unknown): Promise<void> {
+  const { kv } = await import("@vercel/kv");
+  await kv.set(key, value);
+}
+
+// ─── File system helpers (local dev) ────────────────────────────────
+
 const DATA_DIR = path.join(process.cwd(), "data");
 const DATA_FILE = path.join(DATA_DIR, "products.json");
+const SETTINGS_FILE = path.join(DATA_DIR, "settings.json");
+const CACHE_FILE = path.join(DATA_DIR, "cache.json");
 
 function ensureDataDir() {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
-  if (!fs.existsSync(DATA_FILE)) {
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  if (!fs.existsSync(DATA_FILE))
     fs.writeFileSync(DATA_FILE, JSON.stringify({ products: [] }, null, 2));
-  }
 }
 
 function readData(): StorageData {
   ensureDataDir();
-  const raw = fs.readFileSync(DATA_FILE, "utf-8");
-  return JSON.parse(raw);
+  return JSON.parse(fs.readFileSync(DATA_FILE, "utf-8"));
 }
 
 function writeData(data: StorageData) {
@@ -41,17 +64,31 @@ function writeData(data: StorageData) {
   fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
 }
 
-export function getProducts(): TrackedProduct[] {
+function readSettingsFile(): EmailSettingsData {
+  ensureDataDir();
+  if (!fs.existsSync(SETTINGS_FILE))
+    return { enabled: false, senderEmail: "", senderAppPassword: "", recipientEmail: "" };
+  try {
+    return JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf-8"));
+  } catch {
+    return { enabled: false, senderEmail: "", senderAppPassword: "", recipientEmail: "" };
+  }
+}
+
+// ─── Products ────────────────────────────────────────────────────────
+
+export async function getProductsAsync(): Promise<TrackedProduct[]> {
+  if (USE_KV) {
+    return (await kvGet<TrackedProduct[]>("products")) || [];
+  }
   return readData().products;
 }
 
-export function addProduct(
+export async function addProduct(
   product: Omit<TrackedProduct, "id" | "addedAt" | "previouslyInStock">,
-): TrackedProduct {
-  const data = readData();
-
-  // Check for duplicate URL
-  const existing = data.products.find((p) => p.url === product.url);
+): Promise<TrackedProduct> {
+  const products = await getProductsAsync();
+  const existing = products.find((p) => p.url === product.url);
   if (existing) return existing;
 
   const newProduct: TrackedProduct = {
@@ -61,95 +98,90 @@ export function addProduct(
     previouslyInStock: product.inStock,
   };
 
-  data.products.push(newProduct);
-  writeData(data);
+  products.push(newProduct);
+
+  if (USE_KV) {
+    await kvSet("products", products);
+  } else {
+    writeData({ products });
+  }
+
   return newProduct;
 }
 
-export function updateProduct(
+export async function updateProduct(
   id: string,
   updates: Partial<TrackedProduct>,
-): TrackedProduct | null {
-  const data = readData();
-  const index = data.products.findIndex((p) => p.id === id);
+): Promise<TrackedProduct | null> {
+  const products = await getProductsAsync();
+  const index = products.findIndex((p) => p.id === id);
   if (index === -1) return null;
 
-  data.products[index] = { ...data.products[index], ...updates };
-  writeData(data);
-  return data.products[index];
-}
+  products[index] = { ...products[index], ...updates };
 
-export function removeProduct(id: string): boolean {
-  const data = readData();
-  const initialLength = data.products.length;
-  data.products = data.products.filter((p) => p.id !== id);
-  if (data.products.length < initialLength) {
-    writeData(data);
-    return true;
+  if (USE_KV) {
+    await kvSet("products", products);
+  } else {
+    writeData({ products });
   }
-  return false;
+
+  return products[index];
 }
 
-export function getRestockAlerts(): TrackedProduct[] {
-  const data = readData();
-  // Products that are now in stock but were previously out of stock
-  return data.products.filter((p) => p.inStock && !p.previouslyInStock);
+export async function removeProduct(id: string): Promise<boolean> {
+  const products = await getProductsAsync();
+  const filtered = products.filter((p) => p.id !== id);
+  if (filtered.length === products.length) return false;
+
+  if (USE_KV) {
+    await kvSet("products", filtered);
+  } else {
+    writeData({ products: filtered });
+  }
+
+  return true;
 }
 
-export function clearAlert(id: string) {
-  const data = readData();
-  const product = data.products.find((p) => p.id === id);
+export async function clearAlert(id: string): Promise<void> {
+  const products = await getProductsAsync();
+  const product = products.find((p) => p.id === id);
   if (product) {
     product.previouslyInStock = product.inStock;
-    writeData(data);
+    if (USE_KV) {
+      await kvSet("products", products);
+    } else {
+      writeData({ products });
+    }
   }
 }
 
-// ─── Email Settings ─────────────────────────────────────────────────
+// ─── Email Settings ──────────────────────────────────────────────────
 
-export interface EmailSettingsData {
-  enabled: boolean;
-  senderEmail: string;
-  senderAppPassword: string;
-  recipientEmail: string;
+export async function getEmailSettings(): Promise<EmailSettingsData> {
+  if (USE_KV) {
+    return (
+      (await kvGet<EmailSettingsData>("settings")) || {
+        enabled: false,
+        senderEmail: "",
+        senderAppPassword: "",
+        recipientEmail: "",
+      }
+    );
+  }
+  return readSettingsFile();
 }
 
-const SETTINGS_FILE = path.join(DATA_DIR, "settings.json");
-
-function readSettings(): EmailSettingsData {
-  ensureDataDir();
-  if (!fs.existsSync(SETTINGS_FILE)) {
-    return {
-      enabled: false,
-      senderEmail: "",
-      senderAppPassword: "",
-      recipientEmail: "",
-    };
-  }
-  try {
-    return JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf-8"));
-  } catch {
-    return {
-      enabled: false,
-      senderEmail: "",
-      senderAppPassword: "",
-      recipientEmail: "",
-    };
+export async function saveEmailSettings(settings: EmailSettingsData): Promise<void> {
+  if (USE_KV) {
+    await kvSet("settings", settings);
+  } else {
+    ensureDataDir();
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2));
   }
 }
 
-export function getEmailSettings(): EmailSettingsData {
-  return readSettings();
-}
+// ─── Discovery Cache ─────────────────────────────────────────────────
 
-export function saveEmailSettings(settings: EmailSettingsData) {
-  ensureDataDir();
-  fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2));
-}
-
-// ─── Discovery Cache ────────────────────────────────────────────────
-
-const CACHE_FILE = path.join(DATA_DIR, "cache.json");
 const CACHE_TTL = 60 * 60 * 1000; // 1 hour
 
 interface CacheEntry {
@@ -161,7 +193,7 @@ interface CacheStore {
   [key: string]: CacheEntry;
 }
 
-function readCache(): CacheStore {
+function readCacheFile(): CacheStore {
   ensureDataDir();
   if (!fs.existsSync(CACHE_FILE)) return {};
   try {
@@ -171,25 +203,38 @@ function readCache(): CacheStore {
   }
 }
 
-function writeCache(cache: CacheStore) {
-  ensureDataDir();
-  fs.writeFileSync(CACHE_FILE, JSON.stringify(cache));
-}
+export async function getCache<T>(key: string): Promise<T | null> {
+  if (USE_KV) {
+    const entry = await kvGet<CacheEntry>(`cache:${key}`);
+    if (!entry) return null;
+    if (Date.now() - entry.timestamp > CACHE_TTL) {
+      const { kv } = await import("@vercel/kv");
+      await kv.del(`cache:${key}`);
+      return null;
+    }
+    return entry.data as T;
+  }
 
-export function getCache<T>(key: string): T | null {
-  const cache = readCache();
+  const cache = readCacheFile();
   const entry = cache[key];
   if (!entry) return null;
   if (Date.now() - entry.timestamp > CACHE_TTL) {
     delete cache[key];
-    writeCache(cache);
+    fs.writeFileSync(CACHE_FILE, JSON.stringify(cache));
     return null;
   }
   return entry.data as T;
 }
 
-export function setCache(key: string, data: unknown) {
-  const cache = readCache();
-  cache[key] = { data, timestamp: Date.now() };
-  writeCache(cache);
+export async function setCache(key: string, data: unknown): Promise<void> {
+  const entry: CacheEntry = { data, timestamp: Date.now() };
+
+  if (USE_KV) {
+    await kvSet(`cache:${key}`, entry);
+  } else {
+    ensureDataDir();
+    const cache = readCacheFile();
+    cache[key] = entry;
+    fs.writeFileSync(CACHE_FILE, JSON.stringify(cache));
+  }
 }

@@ -1,6 +1,5 @@
 import fs from "fs";
 import path from "path";
-import { kv } from "@vercel/kv";
 
 export interface TrackedProduct {
   id: string;
@@ -29,6 +28,16 @@ export interface EmailSettingsData {
 // ─── Detect environment ──────────────────────────────────────────────
 
 const USE_KV = !!process.env.KV_REST_API_URL;
+
+// ─── Upstash Redis client (production) ──────────────────────────────
+
+function getRedis() {
+  const { Redis } = require("@upstash/redis");
+  return new Redis({
+    url: process.env.KV_REST_API_URL!,
+    token: process.env.KV_REST_API_TOKEN!,
+  });
+}
 
 // ─── File system helpers (local dev) ────────────────────────────────
 
@@ -68,7 +77,8 @@ function readSettingsFile(): EmailSettingsData {
 
 export async function getProductsAsync(): Promise<TrackedProduct[]> {
   if (USE_KV) {
-    return (await kv.get<TrackedProduct[]>("products")) || [];
+    const redis = getRedis();
+    return (await redis.get("products")) || [];
   }
   return readData().products;
 }
@@ -90,7 +100,8 @@ export async function addProduct(
   products.push(newProduct);
 
   if (USE_KV) {
-    await kv.set("products", products);
+    const redis = getRedis();
+    await redis.set("products", JSON.stringify(products));
   } else {
     writeData({ products });
   }
@@ -109,7 +120,8 @@ export async function updateProduct(
   products[index] = { ...products[index], ...updates };
 
   if (USE_KV) {
-    await kv.set("products", products);
+    const redis = getRedis();
+    await redis.set("products", JSON.stringify(products));
   } else {
     writeData({ products });
   }
@@ -123,7 +135,8 @@ export async function removeProduct(id: string): Promise<boolean> {
   if (filtered.length === products.length) return false;
 
   if (USE_KV) {
-    await kv.set("products", filtered);
+    const redis = getRedis();
+    await redis.set("products", JSON.stringify(filtered));
   } else {
     writeData({ products: filtered });
   }
@@ -137,7 +150,8 @@ export async function clearAlert(id: string): Promise<void> {
   if (product) {
     product.previouslyInStock = product.inStock;
     if (USE_KV) {
-      await kv.set("products", products);
+      const redis = getRedis();
+      await redis.set("products", JSON.stringify(products));
     } else {
       writeData({ products });
     }
@@ -148,21 +162,18 @@ export async function clearAlert(id: string): Promise<void> {
 
 export async function getEmailSettings(): Promise<EmailSettingsData> {
   if (USE_KV) {
-    return (
-      (await kv.get<EmailSettingsData>("settings")) || {
-        enabled: false,
-        senderEmail: "",
-        senderAppPassword: "",
-        recipientEmail: "",
-      }
-    );
+    const redis = getRedis();
+    const raw = await redis.get("settings");
+    if (!raw) return { enabled: false, senderEmail: "", senderAppPassword: "", recipientEmail: "" };
+    return typeof raw === "string" ? JSON.parse(raw) : raw;
   }
   return readSettingsFile();
 }
 
 export async function saveEmailSettings(settings: EmailSettingsData): Promise<void> {
   if (USE_KV) {
-    await kv.set("settings", settings);
+    const redis = getRedis();
+    await redis.set("settings", JSON.stringify(settings));
   } else {
     ensureDataDir();
     fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2));
@@ -194,10 +205,12 @@ function readCacheFile(): CacheStore {
 
 export async function getCache<T>(key: string): Promise<T | null> {
   if (USE_KV) {
-    const entry = await kv.get<CacheEntry>(`cache:${key}`);
-    if (!entry) return null;
+    const redis = getRedis();
+    const raw = await redis.get(`cache:${key}`);
+    if (!raw) return null;
+    const entry: CacheEntry = typeof raw === "string" ? JSON.parse(raw) : raw;
     if (Date.now() - entry.timestamp > CACHE_TTL) {
-      await kv.del(`cache:${key}`);
+      await redis.del(`cache:${key}`);
       return null;
     }
     return entry.data as T;
@@ -218,7 +231,8 @@ export async function setCache(key: string, data: unknown): Promise<void> {
   const entry: CacheEntry = { data, timestamp: Date.now() };
 
   if (USE_KV) {
-    await kv.set(`cache:${key}`, entry);
+    const redis = getRedis();
+    await redis.set(`cache:${key}`, JSON.stringify(entry));
   } else {
     ensureDataDir();
     const cache = readCacheFile();

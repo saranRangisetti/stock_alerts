@@ -727,6 +727,91 @@ export async function scrapeNews(): Promise<NewsItem[]> {
     console.error("One Piece TCG news error:", error);
   }
 
+  // Google News RSS
+  const googleQueries = [
+    "pokemon trading cards restock",
+    "one piece trading card game restock",
+    "pokemon elite trainer box in stock",
+  ];
+  for (const query of googleQueries) {
+    try {
+      const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en-US&gl=US&ceid=US:en`;
+      const res = await fetchWithTimeout(rssUrl, { headers: HEADERS });
+      const xml = await res.text();
+      const $ = cheerio.load(xml, { xmlMode: true });
+
+      $("item").slice(0, 5).each((_, el) => {
+        const $el = $(el);
+        const title = $el.find("title").first().text().trim();
+        const href = $el.find("link").first().text().trim() || $el.find("guid").first().text().trim();
+        const desc = $el.find("description").first().text().replace(/<[^>]*>/g, "").trim().slice(0, 200);
+        const dateText = $el.find("pubDate").first().text().trim();
+        const sourceName = $el.find("source").first().text().trim() || "Google News";
+
+        if (title && href && href.startsWith("http")) {
+          const isDeal = /deal|sale|discount|%\s*off/i.test(title + desc);
+          const isRestock = /restock|back in stock|available now|in stock/i.test(title + desc);
+          const isLaunch = /new|release|launch|reveal|announce|expansion/i.test(title + desc);
+          news.push({
+            title,
+            description: desc,
+            url: href,
+            date: dateText ? new Date(dateText).toISOString().split("T")[0] : new Date().toISOString().split("T")[0],
+            source: `Google News · ${sourceName}`,
+            imageUrl: null,
+            type: isDeal ? "deal" : isRestock ? "restock" : isLaunch ? "launch" : "news",
+          });
+        }
+      });
+    } catch (error) {
+      console.error("Google News RSS error:", error);
+    }
+  }
+
+  // Reddit — r/PKMNTCGDeals and r/PokemonTCG
+  const subreddits = [
+    { sub: "PKMNTCGDeals", label: "r/PKMNTCGDeals" },
+    { sub: "PokemonTCG", label: "r/PokemonTCG" },
+    { sub: "OnePieceTCG", label: "r/OnePieceTCG" },
+  ];
+  for (const { sub, label } of subreddits) {
+    try {
+      const res = await fetchWithTimeout(
+        `https://www.reddit.com/r/${sub}/hot.json?limit=8`,
+        { headers: { ...HEADERS, Accept: "application/json" } },
+      );
+      if (!res.ok) continue;
+      const data = await res.json();
+      /* eslint-disable @typescript-eslint/no-explicit-any */
+      const posts: any[] = data?.data?.children || [];
+      for (const child of posts) {
+        const post = child.data;
+        if (!post?.title || post?.stickied) continue;
+        const title: string = post.title;
+        const href: string = post.url?.startsWith("http") ? post.url : `https://www.reddit.com${post.permalink}`;
+        const desc: string = (post.selftext || "").slice(0, 200);
+        const imgUrl: string | null = post.thumbnail?.startsWith("http") ? post.thumbnail : null;
+        const date = post.created_utc ? new Date(post.created_utc * 1000).toISOString().split("T")[0] : new Date().toISOString().split("T")[0];
+
+        const isDeal = /deal|sale|discount|%\s*off|\$|price/i.test(title + desc);
+        const isRestock = /restock|back in stock|available|found|spotted/i.test(title + desc);
+        const isLaunch = /new|release|launch|reveal|announce|expansion|set/i.test(title + desc);
+        news.push({
+          title,
+          description: desc,
+          url: `https://www.reddit.com${post.permalink}`,
+          date,
+          source: label,
+          imageUrl: imgUrl,
+          type: isDeal ? "deal" : isRestock ? "restock" : isLaunch ? "launch" : "news",
+        });
+      }
+      /* eslint-enable @typescript-eslint/no-explicit-any */
+    } catch (error) {
+      console.error(`Reddit ${sub} error:`, error);
+    }
+  }
+
   return news;
 }
 

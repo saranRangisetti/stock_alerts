@@ -28,6 +28,7 @@ export interface EmailSettingsData {
 // ─── Detect environment ──────────────────────────────────────────────
 
 const USE_KV = !!process.env.KV_REST_API_URL;
+const IS_VERCEL = !!process.env.VERCEL; // true on all Vercel deployments
 
 // ─── Upstash REST API (no package needed) ───────────────────────────
 
@@ -102,6 +103,7 @@ function readSettingsFile(): EmailSettingsData {
 
 export async function getProductsAsync(): Promise<TrackedProduct[]> {
   if (USE_KV) return (await kvGet<TrackedProduct[]>("products")) || [];
+  if (IS_VERCEL) return []; // KV not configured yet
   return readData().products;
 }
 
@@ -121,7 +123,7 @@ export async function addProduct(
   products.push(newProduct);
 
   if (USE_KV) await kvSet("products", products);
-  else writeData({ products });
+  else if (!IS_VERCEL) writeData({ products });
 
   return newProduct;
 }
@@ -137,7 +139,7 @@ export async function updateProduct(
   products[index] = { ...products[index], ...updates };
 
   if (USE_KV) await kvSet("products", products);
-  else writeData({ products });
+  else if (!IS_VERCEL) writeData({ products });
 
   return products[index];
 }
@@ -148,7 +150,7 @@ export async function removeProduct(id: string): Promise<boolean> {
   if (filtered.length === products.length) return false;
 
   if (USE_KV) await kvSet("products", filtered);
-  else writeData({ products: filtered });
+  else if (!IS_VERCEL) writeData({ products: filtered });
 
   return true;
 }
@@ -160,7 +162,7 @@ export async function clearAlert(id: string): Promise<void> {
   product.previouslyInStock = product.inStock;
 
   if (USE_KV) await kvSet("products", products);
-  else writeData({ products });
+  else if (!IS_VERCEL) writeData({ products });
 }
 
 // ─── Email Settings ──────────────────────────────────────────────────
@@ -171,12 +173,13 @@ export async function getEmailSettings(): Promise<EmailSettingsData> {
       enabled: false, senderEmail: "", senderAppPassword: "", recipientEmail: "",
     };
   }
+  if (IS_VERCEL) return { enabled: false, senderEmail: "", senderAppPassword: "", recipientEmail: "" };
   return readSettingsFile();
 }
 
 export async function saveEmailSettings(settings: EmailSettingsData): Promise<void> {
   if (USE_KV) await kvSet("settings", settings);
-  else {
+  else if (!IS_VERCEL) {
     ensureDataDir();
     fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2));
   }
@@ -212,6 +215,7 @@ export async function getCache<T>(key: string): Promise<T | null> {
     }
     return entry.data as T;
   }
+  if (IS_VERCEL) return null; // no cache without KV on Vercel
 
   const cache = readCacheFile();
   const entry = cache[key];
@@ -227,7 +231,7 @@ export async function getCache<T>(key: string): Promise<T | null> {
 export async function setCache(key: string, data: unknown): Promise<void> {
   const entry: CacheEntry = { data, timestamp: Date.now() };
   if (USE_KV) await kvSet(`cache:${key}`, entry);
-  else {
+  else if (!IS_VERCEL) {
     ensureDataDir();
     const cache = readCacheFile();
     cache[key] = entry;
